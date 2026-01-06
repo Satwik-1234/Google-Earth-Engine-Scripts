@@ -1,0 +1,104 @@
+/**************************************************
+ * 1. AOI – FAO GAUL DISTRICTS
+ **************************************************/
+
+var gaul = ee.FeatureCollection("FAO/GAUL_SIMPLIFIED_500m/2015/level2");
+
+var districts = ['Satara','Sangli','Kolhapur','Solapur'];
+
+var AOI = gaul
+  .filter(ee.Filter.eq('ADM1_NAME', 'Maharashtra'))
+  .filter(ee.Filter.inList('ADM2_NAME', districts));
+
+Map.centerObject(AOI, 8);
+Map.addLayer(AOI, {color: 'red'}, 'AOI');
+
+/**************************************************
+ * 2. SENTINEL-2 SR (SAFE BAND SELECTION)
+ **************************************************/
+
+// ONLY science bands → avoids QA/MSK conflict
+var s2Bands = [
+  'B2','B3','B4','B8',   // main agri bands
+  'B11','B12'           // optional SWIR
+];
+
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(AOI)
+  .filterDate('2024-01-01', '2024-12-31')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+  .select(s2Bands);   // 🔑 CRITICAL FIX
+
+var composite = s2.median().clip(AOI);
+
+/**************************************************
+ * 3. TRUE COLOR COMPOSITE (TCC)
+ **************************************************/
+
+Map.addLayer(
+  composite,
+  {bands:['B4','B3','B2'], min:0, max:3000},
+  'True Color Composite (TCC)'
+);
+
+/**************************************************
+ * 4. FALSE COLOR COMPOSITE (FCC)
+ **************************************************/
+
+Map.addLayer(
+  composite,
+  {bands:['B8','B4','B3'], min:0, max:3000},
+  'False Color Composite (FCC)'
+);
+
+/**************************************************
+ * 5. INDICES
+ **************************************************/
+
+var ndvi = composite.normalizedDifference(['B8','B4']).rename('NDVI');
+var ndwi = composite.normalizedDifference(['B3','B8']).rename('NDWI');
+
+Map.addLayer(ndvi, {min:0, max:1, palette:['white','green']}, 'NDVI');
+Map.addLayer(ndwi, {min:-1, max:1, palette:['brown','white','blue']}, 'NDWI');
+
+/**************************************************
+ * 6. CROP CLASSIFICATION (DEMO)
+ **************************************************/
+
+var inputImage = composite.addBands([ndvi, ndwi]);
+
+// Sample training points (replace with real field data)
+var trainingPoints = ee.FeatureCollection([
+  ee.Feature(ee.Geometry.Point([74.3,17.6]), {'class': 0}),
+  ee.Feature(ee.Geometry.Point([74.6,17.4]), {'class': 1}),
+  ee.Feature(ee.Geometry.Point([75.0,17.2]), {'class': 2})
+]);
+
+var trainingBands = ['B2','B3','B4','B8','NDVI','NDWI'];
+
+var training = inputImage.sampleRegions({
+  collection: trainingPoints,
+  properties: ['class'],
+  scale: 10
+});
+
+var classifier = ee.Classifier.smileRandomForest(100)
+  .train({
+    features: training,
+    classProperty: 'class',
+    inputProperties: trainingBands
+  });
+
+var classified = inputImage.classify(classifier);
+
+Map.addLayer(
+  classified,
+  {min:0, max:2, palette:['gray','green','yellow']},
+  'Crop Classification 2024'
+);
+
+/**************************************************
+ * DONE
+ **************************************************/
+
+print('Sentinel-2 2024 Agriculture workflow completed successfully');
